@@ -1,0 +1,11 @@
+# Maven / IDE (copy to each Java service repo as .gitignore)
+target/
+.flattened-pom.xml
+.idea/
+*.iml
+.classpath
+.project
+.settings
+.factorypath
+hs_err_pid*
+*.log

@@ -1,0 +1,47 @@
+---
+description: Контекст платформы alert-job (мультирепо, соседние клоны)
+alwaysApply: true
+---
+
+# alert-job — экосистема репозиториев
+
+Продукт разбит на отдельные git-репозитории. **Текущая папка — один сервис или библиотека.** Не ищи код других сервисов здесь.
+
+GitHub: монорепо **`alert-job`** (legacy); мультирепо — префикс **`alert-job-*`**.
+
+## Соседние репозитории (один уровень с этим клоном)
+
+| Репозиторий | Роль |
+|-------------|------|
+| `alert-job-base` | Meta: Maven parent POM, `config/`, документация, workspace |
+| `alert-job-common` | Общая библиотека JAR |
+| `alert-job-core` | Ядро, API, пользователи, фильтры |
+| `alert-job-parser` | Парсеры бирж |
+| `alert-job-notification` | Уведомления, автоответ, OTP |
+| `alert-job-llm` | LLM / AI |
+| `alert-job-gateway` | API Gateway |
+| `alert-job-config` | Spring Cloud Config Server (приложение) |
+| `alert-job-config-repo` | Файлы для Config Server (native), отдельный git |
+| `alert-job-front` | React SPA |
+| `alert-job-deploy` | Docker, compose, Keycloak dev-образ, CI |
+
+Сервисы общаются по **фиксированным URL** (localhost / env), без Eureka.
+
+## Локальная сборка Java
+
+1. `alert-job-base`: `mvn -N install` (parent POM `alert-job-parent`)
+2. `alert-job-common`: `mvn install -DskipTests`
+3. Этот сервис: `mvn package -DskipTests`
+
+Parent: `../alert-job-base/pom.xml`. Dockerfiles: `../alert-job-deploy/docker/`.
+
+## Стенд Docker
+
+Только из **`alert-job-deploy`**: `docker compose up` (dev) / `docker compose -f docker-compose-prod.yml` (prod).  
+Volumes на `../alert-job-base/config` и `../alert-job-config-repo`.
+
+## Ограничения агента
+
+- Менять только код **текущего** репозитория, если пользователь не просит иное.
+- Версии Spring/Java — из parent в `alert-job-base`, не поднимать самовольно.
+- Коммиты — только по явному запросу пользователя.

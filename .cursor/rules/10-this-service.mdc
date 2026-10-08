@@ -1,0 +1,8 @@
+---
+description: Repositoriy alert-job-common
+alwaysApply: true
+---
+
+# alert-job-common
+
+Library JAR `common-alert-job`. No Spring Boot app. Playwright helpers, proxy, shared types. After changes run `mvn install`.
