@@ -38,6 +38,10 @@ public class PlaywrightManager implements PlaywrightBrowserManager {
     @Value("${playwright.chromium.slow-mo-ms:120}")
     private int slowMoMs;
 
+    /** &gt;0 — Chromium слушает CDP (config: playwright.chromium.remote-debugging-port). */
+    @Value("${playwright.chromium.remote-debugging-port:0}")
+    private int cdpDebugPort;
+
     @Override
     public Playwright createPlaywright() {
         try {
@@ -87,6 +91,10 @@ public class PlaywrightManager implements PlaywrightBrowserManager {
         if (headless && headlessNew) {
             args.add("--headless=new");
         }
+        if (cdpDebugPort > 0) {
+            args.add("--remote-debugging-port=" + cdpDebugPort);
+            log.info("Playwright CDP: порт {} (подключение: http://127.0.0.1:{})", cdpDebugPort, cdpDebugPort);
+        }
 
         BrowserType.LaunchOptions launchOptions = new BrowserType.LaunchOptions()
                 .setHeadless(headless)
@@ -127,6 +135,8 @@ public class PlaywrightManager implements PlaywrightBrowserManager {
                     try { Thread.sleep(retryDelayMs * attempt); }
                     catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
                 }
+            } catch (IllegalStateException e) {
+                log.warn("Попытка {}/{}: {}", attempt, maxRetries, e.getMessage());
             } catch (Exception e) {
                 log.error("Ошибка получения прокси с попытки {}: {}", attempt, e.getMessage(), e);
             }

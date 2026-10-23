@@ -26,7 +26,7 @@ public class ProxySupplier {
     @Value("${parser.proxy.file.path}")
     private String proxyFile;
 
-    @Value("${parser.proxy.url:}")
+    @Value("${parser.proxy.url}")
     private String proxyUrl;
 
     @Autowired
@@ -36,15 +36,8 @@ public class ProxySupplier {
     private final ProxyParser proxyParser = new ProxyParser();
     private int index = 0;
 
-    private boolean isProxyUrlConfigured() {
-        return proxyUrl != null && !proxyUrl.isBlank();
-    }
-
     // ЗАГРУЗКА И ПАРСИНГ
     private synchronized List<String> downloadProxyLines() throws IOException {
-        if (!isProxyUrlConfigured()) {
-            return List.of();
-        }
         URL url = new URL(proxyUrl);
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(url.openStream()))) {
             return reader.lines().toList();
@@ -64,12 +57,8 @@ public class ProxySupplier {
     @PostConstruct
     public void init() {
         if ("url".equalsIgnoreCase(mode)) {
-            if (isProxyUrlConfigured()) {
-                downloadProxies();
-                log.debug("Прокси загружены по URL: {}", proxyUrl);
-            } else {
-                log.warn("Режим url, но parser.proxy.url пуст — загрузка с URL пропущена");
-            }
+            downloadProxies();
+            log.debug("Прокси загружены по URL: {}", proxyUrl);
         } else {
             readProxies();
             log.debug("Прокси загружены из файла: {}", proxyFile);
@@ -77,10 +66,6 @@ public class ProxySupplier {
     }
 
     public synchronized List<ProxyCredentials> downloadProxies() {
-        if (!isProxyUrlConfigured()) {
-            log.debug("parser.proxy.url пуст — загрузка с URL не выполняется");
-            return proxies;
-        }
         try {
             if (proxies.isEmpty()) {
                 List<String> lines = downloadProxyLines();
@@ -135,14 +120,16 @@ public class ProxySupplier {
 
     // Получение всего списка
     public synchronized List<ProxyCredentials> getProxies() {
-        return proxies;
+        return new ArrayList<>(proxies);
     }
 
-    // Получение только рабочих
+    /**
+     * Прокси, прошедшие проверку (для браузера и назначения).
+     * {@link ProxyState#NEW} не включаем — иначе после refresh SUPPLIER в пул попадают непроверенные WebShare.
+     */
     public synchronized List<ProxyCredentials> getWorkingProxies() {
         return proxies.stream()
                 .filter(p -> p.getState() == ProxyState.ACTIVE
-                        || p.getState() == ProxyState.NEW
                         || p.getState() == ProxyState.WARMING_UP)
                 .collect(Collectors.toList());
     }
@@ -151,15 +138,12 @@ public class ProxySupplier {
     public synchronized List<ProxyCredentials> loadFreshProxies() {
         List<String> lines;
         try {
-            if (isProxyUrlConfigured()) {
+            if (proxyUrl != null && !proxyUrl.isBlank()) {
                 log.debug("Обновление прокси: загрузка из URL {}", proxyUrl);
                 lines = downloadProxyLines();
-            } else if (!"url".equalsIgnoreCase(mode)) {
+            } else {
                 log.debug("Обновление прокси: читаем файл {}", proxyFile);
                 lines = fileReader.read(proxyFile);
-            } else {
-                log.debug("parser.proxy.url пуст — обновление с URL пропущено");
-                return List.of();
             }
         } catch (Exception e) {
             log.error("Ошибка загрузки прокси при обновлении: {}", e.getMessage());
@@ -197,7 +181,4 @@ public class ProxySupplier {
         index++;
         return pc;
     }
-
-    // ---- Логирование diff (оставлено без изменений) ----
-    public void logProxyDiff(List<ProxyCredentials> oldList, List<ProxyCredentials> newList) { /* ... */ }
 }

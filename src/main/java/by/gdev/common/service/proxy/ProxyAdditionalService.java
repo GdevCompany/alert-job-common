@@ -26,7 +26,7 @@ public class ProxyAdditionalService {
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
 
-    @Value("${proxy.additional.url:}")
+    @Value("${proxy.additional.url}")
     private String proxyAdditionalUrl;
 
     public ProxyAdditionalService(RestTemplate restTemplate, ObjectMapper objectMapper) {
@@ -35,10 +35,6 @@ public class ProxyAdditionalService {
     }
 
     public List<ProxyCredentials> fetchProxies() {
-        if (proxyAdditionalUrl == null || proxyAdditionalUrl.isBlank()) {
-            log.info("proxy.additional.url пуст — загрузка с URL не выполняется");
-            return List.of();
-        }
         try {
             UriComponentsBuilder builder = UriComponentsBuilder.fromUriString(proxyAdditionalUrl);
             String authToken = builder.build().getQueryParams().getFirst("auth_token");
