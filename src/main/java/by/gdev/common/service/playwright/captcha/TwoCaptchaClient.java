@@ -1,7 +1,6 @@
 package by.gdev.common.service.playwright.captcha;
 
 import by.gdev.common.model.proxy.ProxyCredentials;
-import by.gdev.common.service.playwright.debug.PlaywrightCdpDebugSink;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -24,8 +23,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * HTTP-клиент 2Captcha API v2:
- * Yandex SmartCaptcha (token, proxyless), AudioTask, опционально PazlCaptchaTask, hCaptcha.
+ * HTTP-клиент 2Captcha API v2: Yandex SmartCaptcha (token), AudioTask, PazlCaptchaTask, hCaptcha.
+ * <p>
+ * Калейдоскоп Яндекса уходит как {@code PazlCaptchaTask}: PNG 320×180 и JSON-массив {@code task}
+ * из ответа {@code /check}. Ожидаемый solution — целое число кликов по правой стрелке слайдера.
+ * Строка {@code coordinates:…} для слайдера бесполезна: такие ответы помечаются
+ * {@code reportIncorrect}, задача создаётся заново. {@code solution=0} сразу переводит вызов
+ * на аудио ({@link PazlCaptchaInvokeResult#forAudioFallback()}). Положительное число кликов
+ * само по себе ещё не значит, что виджет закрылся: Яндекс может выдать следующий кадр,
+ * и {@code reportCorrect} ставит уже солвер после принятого «Отправить».
  */
 @Component
 @Slf4j
@@ -259,7 +265,6 @@ public class TwoCaptchaClient {
                 Optional<PazlSolution> sol = parsePazlSolution(rawSol, max, imgW);
                 if (sol.isEmpty()) {
                     log.warn("2Captcha: PazlCaptcha — не разобрали solution (см. raw выше), reportIncorrect");
-                    PlaywrightCdpDebugSink.dumpPazlResult(taskId, rawSol, "unparsed→reportIncorrect");
                     reportIncorrect(taskId);
                     continue;
                 }
@@ -268,7 +273,6 @@ public class TwoCaptchaClient {
                     PazlSolution withId = new PazlSolution(s.clicks(), s.imageX(), s.imageY(), s.imageWidth(), taskId);
                     log.info("2Captcha: PazlCaptcha → clicks={} sliderMax={} (taskId={})",
                             withId.clicks(), max, taskId);
-                    PlaywrightCdpDebugSink.dumpPazlResult(taskId, rawSol, "clicks=" + withId.clicks());
                     CaptchaVendorLog.applyVendorAnswer(normalizedApiBase(), "PazlCaptchaTask", taskId,
                             "кликов по стрелке слайдера: " + withId.clicks(),
                             "Playwright YandexKaleidoscopeSolver.applySliderClicks");
@@ -277,7 +281,6 @@ public class TwoCaptchaClient {
                 if (s.hasClicks() && s.clicks() != null && s.clicks() == 0) {
                     log.warn("2Captcha: PazlCaptcha → solution=0 — reportIncorrect и переход на audio, taskId={}",
                             taskId);
-                    PlaywrightCdpDebugSink.dumpPazlResult(taskId, rawSol, "solution=0→audio");
                     CaptchaVendorLog.vendorResponse(normalizedApiBase(), "PazlCaptchaTask", taskId, rawSol,
                             "НЕТ (solution=0)", "YandexSmartCaptchaAudioSolver (AudioTask в сессии браузера)");
                     reportIncorrect(taskId);
@@ -286,7 +289,6 @@ public class TwoCaptchaClient {
                 // coordinates — воркер решил как click-captcha, для слайдера бесполезно
                 log.warn("2Captcha: PazlCaptcha → coordinates вместо кликов (x={} y={}) — reportIncorrect",
                         s.imageX(), s.imageY());
-                PlaywrightCdpDebugSink.dumpPazlResult(taskId, rawSol, "coordinates→reportIncorrect");
                 CaptchaVendorLog.vendorResponse(normalizedApiBase(), "PazlCaptchaTask", taskId, rawSol,
                         CaptchaVendorLog.interpretPazlRaw(rawSol), "никто — reportIncorrect + новая задача");
                 reportIncorrect(taskId);
@@ -325,7 +327,8 @@ public class TwoCaptchaClient {
         int imgW = imageWidth > 0 ? imageWidth : 0;
         if (s.matches("-?\\d{1,3}")) {
             int c = Integer.parseInt(s);
-            return (c >= 0 && c <= 64) ? Optional.of(new PazlSolution(Math.min(c, max), null, imgW)) : Optional.empty();
+            int clicks = pazlClickCountFromSolver(c, max);
+            return clicks >= 0 ? Optional.of(new PazlSolution(clicks, null, imgW)) : Optional.empty();
         }
         // coordinates:x=189,y=63;x=194,y=106 — последний x/y как целевая точка на PNG
         Matcher coordStr = Pattern.compile(
@@ -349,7 +352,8 @@ public class TwoCaptchaClient {
             JsonNode n = new ObjectMapper().readTree(s);
             if (n.isNumber()) {
                 int c = n.asInt();
-                return (c >= 0 && c <= 64) ? Optional.of(new PazlSolution(Math.min(c, max), null, imgW)) : Optional.empty();
+                int clicks = pazlClickCountFromSolver(c, max);
+                return clicks >= 0 ? Optional.of(new PazlSolution(clicks, null, imgW)) : Optional.empty();
             }
             if (n.isTextual()) {
                 return parsePazlSolution(n.asText(), max, imgW);
@@ -373,8 +377,9 @@ public class TwoCaptchaClient {
                     }
                     if (v.isNumber()) {
                         int c = v.asInt();
-                        if (c >= 0 && c <= 64) {
-                            return Optional.of(new PazlSolution(Math.min(c, max), null, imgW));
+                        int clicks = pazlClickCountFromSolver(c, max);
+                        if (clicks >= 0) {
+                            return Optional.of(new PazlSolution(clicks, null, imgW));
                         }
                     } else if (v.isTextual()) {
                         Optional<PazlSolution> nested = parsePazlSolution(v.asText(), max, imgW);
@@ -387,6 +392,20 @@ public class TwoCaptchaClient {
         } catch (Exception ignored) {
         }
         return Optional.empty();
+    }
+
+    /**
+     * Число кликов из ответа 2Captcha. Не режем ответ по {@code aria-valuemax}: на YouDo max в DOM часто
+     * не совпадает с реальной длиной пазла (например ответ 24 при max=8).
+     */
+    static int pazlClickCountFromSolver(int solverClicks, int sliderMaxHint) {
+        if (solverClicks < 0 || solverClicks > 64) {
+            return -1;
+        }
+        if (sliderMaxHint > 0 && solverClicks > sliderMaxHint) {
+            return solverClicks;
+        }
+        return solverClicks;
     }
 
     static Optional<PazlSolution> parsePazlSolution(String raw, int sliderMax) {
@@ -644,7 +663,6 @@ public class TwoCaptchaClient {
         log.info("2Captcha: задача PazlCaptcha создана, taskId={}", taskId);
         CaptchaVendorLog.vendorRequest(normalizedApiBase(), "createTask", "PazlCaptchaTask", taskId,
                 "image PNG base64 + task JSON (калейдоскоп Яндекс)");
-        PlaywrightCdpDebugSink.dumpPazlCreate(taskId, imageBase64, taskJson, summarizeTaskArray(taskJson));
         return taskId;
     }
 

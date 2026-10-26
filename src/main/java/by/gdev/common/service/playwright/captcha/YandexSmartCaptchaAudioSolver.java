@@ -1,6 +1,5 @@
 package by.gdev.common.service.playwright.captcha;
 
-import by.gdev.common.service.playwright.debug.PlaywrightCdpDebugSink;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
@@ -23,7 +22,12 @@ import java.util.regex.Pattern;
 
 /**
  * Yandex SmartCaptcha audio challenge → 2Captcha {@link TwoCaptchaClient#solveAudioCaptcha}.
- * Аудио: voice URL в onResponse, скачивание только на потоке solve (не request в onResponse — deadlock).
+ * <p>
+ * На калейдоскопе это запасной путь: Pazl вернул {@code solution=0}, либо пазла на экране уже нет
+ * и основной solve не закрыл виджет. Пока слайдер виден и ответ Pazl просто не получен,
+ * тип задания на аудио не переключается. Voice URL запоминается в {@code onResponse};
+ * mp3 скачивается на потоке solve. {@code request} внутри слушателя ответов дедлочит страницу так же,
+ * как чтение тела {@code /check}.
  */
 @Component
 @Slf4j
@@ -205,9 +209,6 @@ public class YandexSmartCaptchaAudioSolver {
                 }
                 Frame frame = frameOpt.get();
                 log.info("SmartCaptcha audio: frame url={}", truncate(safeUrl(frame), 100));
-                if (Boolean.parseBoolean(System.getenv().getOrDefault("PLAYWRIGHT_DEBUG_MARKUP", "false"))) {
-                    PlaywrightCdpDebugSink.publishSmartCaptcha(page, frame, "audio-round-" + round + "-start");
-                }
                 expandVoiceUrlsInSink(capturedUrls);
                 boolean kaleidoscope = isKaleidoscopeChallengeInFrame(frame);
                 if (kaleidoscope && !capturedUrls.isEmpty()) {

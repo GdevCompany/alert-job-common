@@ -23,6 +23,16 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+/**
+ * Общая точка входа для капчи в Playwright: Yandex SmartCaptcha, Cloudflare Turnstile, hCaptcha.
+ * <p>
+ * YouDo-калейдоскоп идёт через {@link #solveYouDoBrowserSessionKaleidoscope}: пазл решается
+ * в том же браузере, где открыт виджет ({@link YandexKaleidoscopeSolver}), а не внешним
+ * {@code YandexSmartCaptchaTask}. Внешний токен остаётся для чекбокса «Я не робот».
+ * Перехват {@code /check} включается {@link #beginKaleidoscopeNetworkCapture} в начале логина,
+ * до клика «Далее». Длинный smart-token в DOM не отменяет видимый пазл и не отменяет
+ * дополнительную проверку, которая приходит следующим кадром после верного «Отправить».
+ */
 @Component("captchaServiceCommon")
 @Slf4j
 @RequiredArgsConstructor
@@ -530,12 +540,20 @@ public class CaptchaService {
                 "label"
         };
         for (String sel : selectors) {
+            if (kaleidoscopeReady(frame.page())) {
+                log.info("SmartCaptcha: калейдоскоп уже открыт — клики чекбокса прекращаем");
+                return false;
+            }
             try {
                 Locator loc = frame.locator(sel).first();
-                loc.click(new Locator.ClickOptions().setTimeout(8000).setForce(true));
+                loc.click(checkboxClickOptions());
                 log.info("SmartCaptcha DBG [click-frame] OK selector={} frameUrl={}", sel, frame.url());
                 return true;
             } catch (Exception e) {
+                if (browserClosed(e)) {
+                    log.warn("SmartCaptcha: страница закрыта, клики по чекбоксу останавливаем");
+                    return false;
+                }
                 log.info("SmartCaptcha DBG [click-frame] FAIL {}: {}", sel, e.getMessage());
             }
         }
@@ -569,13 +587,21 @@ public class CaptchaService {
             };
         }
         for (String path : paths) {
+            if (kaleidoscopeReady(page)) {
+                log.info("SmartCaptcha: калейдоскоп уже открыт — клики чекбокса прекращаем");
+                return false;
+            }
             try {
                 Locator target = page.frameLocator(path).locator(
                         "input#js-button, .CheckboxCaptcha-Checkbox, #checkbox, [role='checkbox']").first();
-                target.click(new Locator.ClickOptions().setTimeout(2_500).setForce(true));
+                target.click(checkboxClickOptions());
                 log.info("SmartCaptcha DBG [click-frameloc] OK path={}", path);
                 return true;
             } catch (Exception e) {
+                if (browserClosed(page) || browserClosed(e)) {
+                    log.warn("SmartCaptcha: страница закрыта, клики по чекбоксу останавливаем");
+                    return false;
+                }
                 log.info("SmartCaptcha DBG [click-frameloc] FAIL {}: {}", path, e.getMessage());
             }
         }
@@ -622,20 +648,56 @@ public class CaptchaService {
         return false;
     }
 
+    private static Locator.ClickOptions checkboxClickOptions() {
+        return new Locator.ClickOptions()
+                .setTimeout(1_500)
+                .setForce(true)
+                .setNoWaitAfter(true);
+    }
+
+    /** Task из /check или canvas пазла уже есть — поток нельзя держать на кликах чекбокса. */
+    private boolean kaleidoscopeReady(Page page) {
+        try {
+            return isYandexKaleidoscopeChallenge(page) || kaleidoscopeSolver.hasCapturedPuzzleTask(page);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     private boolean clickYandexSmartCaptcha(Page page, Frame frame) {
         try {
+            if (browserClosed(page)) {
+                log.warn("SmartCaptcha: страница закрыта, клик «Я не робот» не делаем");
+                return false;
+            }
+            if (kaleidoscopeReady(page)) {
+                log.info("SmartCaptcha: калейдоскоп уже открыт — локальный клик чекбокса не запускаем");
+                return false;
+            }
             if (isYandexKaleidoscopeChallenge(page) && !isCheckboxIframeChallenge(page)) {
                 log.info("SmartCaptcha DBG [click] skip — калейдоскоп, нужен Pazl/слайдер");
                 return false;
             }
             scrollSmartCaptchaIntoView(page);
             if (clickCheckboxInSmartCaptchaIframe(page)) {
+                if (kaleidoscopeReady(page)) {
+                    log.info("SmartCaptcha: калейдоскоп уже открыт — локальный клик чекбокса не продолжаем");
+                    return false;
+                }
                 page.waitForTimeout(400);
+                if (kaleidoscopeReady(page)) {
+                    log.info("SmartCaptcha: после клика чекбокса открыт калейдоскоп — дальше не кликаем");
+                    return false;
+                }
                 if (verifyYandexSmartCaptchaAfterClick(page, findYandexCheckboxCaptchaFrame(page))) {
                     CaptchaVendorLog.localResult("Playwright", "клик «Я не робот»", "успех (checkbox-iframe)");
                     log.info("SmartCaptcha: успешно пройдена кликом по checkbox-iframe");
                     return true;
                 }
+            }
+            if (kaleidoscopeReady(page)) {
+                log.info("SmartCaptcha: калейдоскоп на экране — остальные клики чекбокса не делаем");
+                return false;
             }
             boolean clicked = false;
             Frame checkboxFrame = findYandexCheckboxCaptchaFrame(page);
@@ -691,9 +753,17 @@ public class CaptchaService {
                 return false;
             }
             page.waitForTimeout(300);
+            if (kaleidoscopeReady(page)) {
+                log.info("SmartCaptcha: клик «Я не робот» открыл калейдоскоп — токен не запрашиваем");
+                return false;
+            }
             if (verifyYandexSmartCaptchaAfterClick(page, frame)) {
                 log.info("SmartCaptcha: успешно пройдена после клика");
                 return true;
+            }
+            if (kaleidoscopeReady(page)) {
+                log.info("SmartCaptcha: после проверки клика на экране калейдоскоп — токен не запрашиваем");
+                return false;
             }
             if (isSmartCaptchaOverlayVisible(page)) {
                 log.warn("SmartCaptcha: локальный клик не прошёл — открыт advanced challenge (оверлей поверх формы)");
@@ -1196,7 +1266,19 @@ public class CaptchaService {
             """;
 
     /**
-     * YouDo: калейдоскоп с task из {@code /check} — Pazl в той же сессии, что и виджет (не {@code YandexSmartCaptchaTask}).
+     * Калейдоскоп YouDo в той же сессии, что и виджет. Не {@code YandexSmartCaptchaTask}:
+     * внешний токен не двигает ползунок на уже открытом пазле.
+     * <p>
+     * Если пазла на экране нет и в DOM уже лежит длинный smart-token, метод сразу выходит:
+     * повторный Pazl по старому task из {@code /check} только мешает форме.
+     * Видимый калейдоскоп или advanced-iframe решаются даже при таком токене — это следующая
+     * «Дополнительная проверка», а не хвост уже закрытого кадра.
+     * <p>
+     * Успех — виджет принял ответ ({@link #isYandexSmartCaptchaAcceptedByWidget}), а не сам факт
+     * числа кликов от 2Captcha. {@code solution=0} уводит в аудио. Пока пазл на экране и Pazl
+     * не решён, тип задания на аудио не переключается.
+     *
+     * @return {@code true}, если после Pazl (или audio-fallback) виджет отдал принятый токен
      */
     public boolean solveYouDoBrowserSessionKaleidoscope(Page page) {
         if (page == null || page.isClosed() || !twoCaptchaClient.isConfigured()) {
@@ -1223,12 +1305,14 @@ public class CaptchaService {
         log.info("SmartCaptcha/YouDo: [3/12] Wait Pazl solution → {}", ok ? "ok" : "fail");
         if (ok) {
             log.info("SmartCaptcha/YouDo: [4/12] Solved via Pazl — challenge done");
+        } else if (yandexAudioEnabled && kaleidoscopeSolver.lastPazlAbortedForAudio()) {
+            log.info("SmartCaptcha/YouDo: [4/12] Pazl solution=0 — AudioTask steps 5–12");
+            ok = runYandexAudioSolve(page);
+            log.info("SmartCaptcha/YouDo: AudioTask после Pazl → {}", ok ? "ok" : "не снято");
+        } else if (!ok && (isYandexKaleidoscopeChallenge(page) || kaleidoscopeSolver.hasCapturedPuzzleTask(page))) {
+            log.warn("SmartCaptcha/YouDo: Pazl не решён, калейдоскоп ещё на экране — тип задания на audio не переключаем");
         } else if (yandexAudioEnabled) {
-            if (kaleidoscopeSolver.lastPazlAbortedForAudio()) {
-                log.info("SmartCaptcha/YouDo: [4/12] Pazl solution=0 — AudioTask steps 5–12");
-            } else {
-                log.info("SmartCaptcha/YouDo: [4/12] Pazl fail — AudioTask steps 5–12");
-            }
+            log.info("SmartCaptcha/YouDo: [4/12] Pazl fail, калейдоскопа на экране нет — AudioTask steps 5–12");
             ok = runYandexAudioSolve(page);
             log.info("SmartCaptcha/YouDo: AudioTask после Pazl → {}", ok ? "ok" : "не снято");
         } else {
@@ -1396,6 +1480,10 @@ public class CaptchaService {
     }
 
     public boolean clickCheckboxInSmartCaptchaIframe(Page page) {
+        if (browserClosed(page)) {
+            log.warn("SmartCaptcha: страница закрыта, клик «Я не робот» не делаем");
+            return false;
+        }
         revealOffScreenSmartCaptchaHosts(page);
         CaptchaVendorLog.localResult("Playwright", "клик «Я не робот» (input#js-button)", "попытка");
         String[] paths = {
@@ -1404,6 +1492,13 @@ public class CaptchaService {
                 "iframe[src*='smartcaptcha.cloud.yandex.ru/backend']"
         };
         for (String path : paths) {
+            if (browserClosed(page)) {
+                return false;
+            }
+            if (kaleidoscopeReady(page)) {
+                log.info("SmartCaptcha: калейдоскоп уже открыт — клики чекбокса прекращаем");
+                return false;
+            }
             if (clickYandexCheckboxInsideIframeHost(page, path)) {
                 return true;
             }
@@ -1420,12 +1515,20 @@ public class CaptchaService {
                 continue;
             }
             for (String sel : YANDEX_CHECKBOX_CLICK_SELECTORS) {
+                if (kaleidoscopeReady(page)) {
+                    log.info("SmartCaptcha: калейдоскоп уже открыт — клики чекбокса прекращаем");
+                    return false;
+                }
                 try {
-                    f.locator(sel).first().click(new Locator.ClickOptions().setTimeout(8_000).setForce(true));
+                    f.locator(sel).first().click(checkboxClickOptions());
                     log.info("SmartCaptcha: клик {} во frame {}", sel, truncateForLog(url, 90));
                     CaptchaVendorLog.localResult("Playwright", "клик «Я не робот»", "OK selector=" + sel);
                     return true;
                 } catch (Exception e) {
+                    if (browserClosed(page) || browserClosed(e)) {
+                        log.warn("SmartCaptcha: страница закрыта, клики по чекбоксу останавливаем");
+                        return false;
+                    }
                     log.debug("SmartCaptcha: клик {} frame {}: {}", sel, truncateForLog(url, 50), e.getMessage());
                 }
             }
@@ -1444,13 +1547,21 @@ public class CaptchaService {
                 page.waitForTimeout(200);
             }
             for (String sel : YANDEX_CHECKBOX_CLICK_SELECTORS) {
+                if (kaleidoscopeReady(page)) {
+                    log.info("SmartCaptcha: калейдоскоп уже открыт — клики чекбокса прекращаем");
+                    return false;
+                }
                 try {
                     Locator target = page.frameLocator(iframeSelector).locator(sel).first();
-                    target.click(new Locator.ClickOptions().setTimeout(8_000).setForce(true));
+                    target.click(checkboxClickOptions());
                     log.info("SmartCaptcha: клик «Я не робот» {} в {}", sel, iframeSelector);
                     CaptchaVendorLog.localResult("Playwright", "клик «Я не робот»", "OK " + iframeSelector + " → " + sel);
                     return true;
                 } catch (Exception e) {
+                    if (browserClosed(page) || browserClosed(e)) {
+                        log.warn("SmartCaptcha: страница закрыта, клики по чекбоксу останавливаем");
+                        return false;
+                    }
                     log.debug("SmartCaptcha: клик {} в {}: {}", sel, iframeSelector, e.getMessage());
                 }
             }
@@ -1466,9 +1577,32 @@ public class CaptchaService {
                 return true;
             }
         } catch (Exception e) {
+            if (browserClosed(page) || browserClosed(e)) {
+                log.warn("SmartCaptcha: страница закрыта, клики по чекбоксу останавливаем");
+                return false;
+            }
             log.info("SmartCaptcha: checkbox iframe {}: {}", iframeSelector, e.getMessage());
         }
         return false;
+    }
+
+    private static boolean browserClosed(Page page) {
+        try {
+            return page == null || page.isClosed();
+        } catch (RuntimeException e) {
+            return true;
+        }
+    }
+
+    private static boolean browserClosed(Exception e) {
+        if (e == null) {
+            return false;
+        }
+        if (e.getClass().getSimpleName().contains("TargetClosed")) {
+            return true;
+        }
+        String message = e.getMessage();
+        return message != null && (message.contains("has been closed") || message.contains("TargetClosed"));
     }
 
     /**
@@ -1477,6 +1611,10 @@ public class CaptchaService {
     public boolean solveYandexSmartCaptchaViaToken(Page page) {
         if (page == null || page.isClosed()) {
             log.warn("SmartCaptcha/2Captcha: страница закрыта до применения токена");
+            return false;
+        }
+        if (isYandexKaleidoscopeChallenge(page) || kaleidoscopeSolver.hasCapturedPuzzleTask(page)) {
+            log.info("SmartCaptcha/2Captcha: калейдоскоп на экране — YandexSmartCaptchaTask не создаём");
             return false;
         }
         Optional<String> siteKey = extractYandexSiteKey(page);
@@ -1568,7 +1706,7 @@ public class CaptchaService {
         return false;
     }
 
-    /** Перехват ответов SmartCaptcha до клика «Далее» (task array уходит в network раньше solve). */
+    /** Перехват ответов SmartCaptcha до клика «Далее»: массив task уходит в сеть раньше, чем стартует solve. */
     public void beginKaleidoscopeNetworkCapture(Page page) {
         kaleidoscopeSolver.beginNetworkCapture(page);
     }
@@ -1814,6 +1952,10 @@ public class CaptchaService {
                 log.info("SmartCaptcha: успешно пройдена локальным кликом");
                 return true;
             }
+            if (isYandexKaleidoscopeChallenge(page) || kaleidoscopeSolver.hasCapturedPuzzleTask(page)) {
+                log.info("SmartCaptcha: после чекбокса открыт калейдоскоп — YandexSmartCaptchaTask не запрашиваем");
+                return false;
+            }
 
             if (!isYandexAdvancedChallenge(page)) {
                 if (isSmartTokenPresentOnPage(page) || isYandexSmartCaptchaPassed(frame)) {
@@ -1852,6 +1994,10 @@ public class CaptchaService {
     }
 
     private boolean solveYandexSmartCaptchaViaTwoCaptcha(Page page, Frame frame) {
+        if (isYandexKaleidoscopeChallenge(page) || kaleidoscopeSolver.hasCapturedPuzzleTask(page)) {
+            log.info("SmartCaptcha/2Captcha: калейдоскоп уже на экране — токен не запрашиваем");
+            return false;
+        }
         if (!isYandexAdvancedChallenge(page)) {
             log.info("SmartCaptcha/2Captcha: пропуск — на странице нет advanced challenge");
             return false;

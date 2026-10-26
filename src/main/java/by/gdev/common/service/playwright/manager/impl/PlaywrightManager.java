@@ -91,9 +91,10 @@ public class PlaywrightManager implements PlaywrightBrowserManager {
         if (headless && headlessNew) {
             args.add("--headless=new");
         }
-        if (cdpDebugPort > 0) {
-            args.add("--remote-debugging-port=" + cdpDebugPort);
-            log.info("Playwright CDP: порт {} (подключение: http://127.0.0.1:{})", cdpDebugPort, cdpDebugPort);
+        int cdpPort = resolvedCdpDebugPort();
+        if (cdpPort > 0) {
+            args.add("--remote-debugging-port=" + cdpPort);
+            log.info("Playwright CDP: порт {} (подключение: http://127.0.0.1:{})", cdpPort, cdpPort);
         }
 
         BrowserType.LaunchOptions launchOptions = new BrowserType.LaunchOptions()
@@ -260,5 +261,22 @@ public class PlaywrightManager implements PlaywrightBrowserManager {
     @Override
     public void applyStealthScripts(BrowserContext context) {
         context.addInitScript(StealthInitScripts.CONTEXT_SCRIPT);
+    }
+
+    /** {@code playwright.chromium.remote-debugging-port} или env {@code PLAYWRIGHT_CDP_PORT}. */
+    private int resolvedCdpDebugPort() {
+        if (cdpDebugPort > 0) {
+            return cdpDebugPort;
+        }
+        String env = System.getenv("PLAYWRIGHT_CDP_PORT");
+        if (env == null || env.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(env.trim());
+        } catch (NumberFormatException e) {
+            log.warn("PLAYWRIGHT_CDP_PORT не число: {}", env);
+            return 0;
+        }
     }
 }
