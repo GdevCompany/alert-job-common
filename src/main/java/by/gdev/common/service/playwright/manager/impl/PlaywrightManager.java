@@ -38,6 +38,10 @@ public class PlaywrightManager implements PlaywrightBrowserManager {
     @Value("${playwright.chromium.slow-mo-ms:120}")
     private int slowMoMs;
 
+    /** &gt;0 — Chromium слушает CDP (config: playwright.chromium.remote-debugging-port). */
+    @Value("${playwright.chromium.remote-debugging-port:0}")
+    private int cdpDebugPort;
+
     @Override
     public Playwright createPlaywright() {
         try {
@@ -87,6 +91,11 @@ public class PlaywrightManager implements PlaywrightBrowserManager {
         if (headless && headlessNew) {
             args.add("--headless=new");
         }
+        int cdpPort = resolvedCdpDebugPort();
+        if (cdpPort > 0) {
+            args.add("--remote-debugging-port=" + cdpPort);
+            log.info("Playwright CDP: порт {} (подключение: http://127.0.0.1:{})", cdpPort, cdpPort);
+        }
 
         BrowserType.LaunchOptions launchOptions = new BrowserType.LaunchOptions()
                 .setHeadless(headless)
@@ -127,6 +136,8 @@ public class PlaywrightManager implements PlaywrightBrowserManager {
                     try { Thread.sleep(retryDelayMs * attempt); }
                     catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
                 }
+            } catch (IllegalStateException e) {
+                log.warn("Попытка {}/{}: {}", attempt, maxRetries, e.getMessage());
             } catch (Exception e) {
                 log.error("Ошибка получения прокси с попытки {}: {}", attempt, e.getMessage(), e);
             }
@@ -250,5 +261,22 @@ public class PlaywrightManager implements PlaywrightBrowserManager {
     @Override
     public void applyStealthScripts(BrowserContext context) {
         context.addInitScript(StealthInitScripts.CONTEXT_SCRIPT);
+    }
+
+    /** {@code playwright.chromium.remote-debugging-port} или env {@code PLAYWRIGHT_CDP_PORT}. */
+    private int resolvedCdpDebugPort() {
+        if (cdpDebugPort > 0) {
+            return cdpDebugPort;
+        }
+        String env = System.getenv("PLAYWRIGHT_CDP_PORT");
+        if (env == null || env.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(env.trim());
+        } catch (NumberFormatException e) {
+            log.warn("PLAYWRIGHT_CDP_PORT не число: {}", env);
+            return 0;
+        }
     }
 }
